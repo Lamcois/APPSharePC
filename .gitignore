@@ -19,3 +19,7 @@ _backup_ui_v1.13.0
 # Python
 __pycache__/
 *.pyc
+
+# Discord (chứa token bí mật - không commit)
+scripts/discord_config.json
+scripts/discord_state.json

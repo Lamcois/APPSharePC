@@ -1,9 +1,0 @@
-{
-  "token": "DIEN_TOKEN_VAO_DAY",
-  "check_interval_seconds": 30,
-  "output_file": "torchlight_discord_chat.txt",
-  "channels": {
-    "1357539594681323612": "#🔥┃gemma",
-    "1357532825561202748": "#💬┃general"
-  }
-}
