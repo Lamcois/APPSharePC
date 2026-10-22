@@ -13,6 +13,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
@@ -281,8 +283,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _capturedPhotos.value = _capturedPhotos.value + file
     }
 
+    // Xử lý ảnh chụp lần lượt (Mutex công bằng FIFO) để giữ đúng thứ tự trang khi chụp liên tiếp
+    private val capturedPhotoMutex = Mutex()
+
+    /** Ảnh vừa chụp từ CameraX: xoay theo EXIF ở luồng IO rồi mới thêm vào danh sách. */
+    fun addCapturedPhoto(file: File) {
+        viewModelScope.launch {
+            capturedPhotoMutex.withLock {
+                withContext(Dispatchers.IO) { ImageUtils.normalizeImageOrientation(file) }
+                addPhoto(file)
+            }
+        }
+    }
+
     fun addPhotos(files: List<File>) {
         _capturedPhotos.value = _capturedPhotos.value + files
+    }
+
+    fun addPhotosFromUris(context: Context, uris: List<Uri>) {
+        viewModelScope.launch {
+            // Sao chép + xoay ảnh nặng, không chạy trên luồng giao diện
+            val copiedFiles = withContext(Dispatchers.IO) {
+                uris.mapNotNull { ImageUtils.copyUriToTempFile(context, it) }
+            }
+            addPhotos(copiedFiles)
+        }
     }
 
     fun removePhoto(index: Int) {
@@ -529,8 +554,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             var outputStreamPair: Pair<java.io.OutputStream, Uri?>? = null
             val context = getApplication<Application>()
 
+            var success = false
             try {
-                outputStreamPair = FileUtils.openDownloadOutputStream(context, item.relativePath.ifBlank { item.name })
+                outputStreamPair = withContext(Dispatchers.IO) {
+                    FileUtils.openDownloadOutputStream(context, item.relativePath.ifBlank { item.name })
+                }
                 val outStream = outputStreamPair.first
 
                 val result = SmbManager.downloadRemoteFile(
@@ -545,6 +573,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     _downloadStatusText.value = "Đang tải ${item.name} ($readStr / $totalStr): $percent%"
                 }
 
+                success = result.success
                 if (result.success) {
                     FileUtils.finishDownload(context, outputStreamPair.second)
                 }
@@ -552,6 +581,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } catch (e: Exception) {
                 _downloadResult.value = SmbDownloadResult(false, "Lỗi khi tải tệp: ${e.localizedMessage}")
             } finally {
+                outputStreamPair?.let { pair ->
+                    try { pair.first.close() } catch (_: Exception) {}
+                    if (!success) FileUtils.abortDownload(context, pair.second)
+                }
                 _isDownloading.value = false
             }
         }
@@ -1540,6 +1573,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val updated = repository.addOrUpdatePeerDevice(device)
             _peerDevices.value = updated
         }
+        // Đang chọn đúng thiết bị vừa sửa -> cập nhật IP mới, tránh gửi tới IP cũ
+        if (_selectedPeerDevice.value?.id == device.id) {
+            selectPeerDevice(device)
+        }
         _showPeerDeviceDialog.value = false
         _editingPeerDevice.value = null
     }
@@ -1567,6 +1604,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _selectedPeerDevice.value = null
         _p2pTargetIp.value = ""
         _peerConnectionResult.value = null
+    }
+
+    /** Người dùng tự gõ IP: bỏ chọn thiết bị trong danh bạ nhưng giữ nguyên IP vừa gõ. */
+    fun setManualP2pTargetIp(ip: String) {
+        _p2pTargetIp.value = ip
+        if (_selectedPeerDevice.value != null && ip != _selectedPeerDevice.value?.primaryIp) {
+            _selectedPeerDevice.value = null
+            _peerConnectionResult.value = null
+        }
     }
 
     override fun onCleared() {

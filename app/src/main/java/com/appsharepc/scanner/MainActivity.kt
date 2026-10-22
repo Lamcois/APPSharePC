@@ -3,6 +3,7 @@ package com.appsharepc.scanner
 import android.Manifest
 import android.content.pm.PackageManager
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -27,9 +28,23 @@ class MainActivity : ComponentActivity() {
 
     private val viewModel: MainViewModel by viewModels()
 
+    // Android 8-9 không có MediaStore.Downloads: phải có quyền ghi bộ nhớ thì mới lưu được tệp tải về
+    private val storagePermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (!isGranted) {
+            Toast.makeText(
+                this,
+                "Chưa cấp quyền bộ nhớ: sẽ không tải được tệp về thư mục Download",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         handleSendIntent(intent)
+        requestLegacyStoragePermissionIfNeeded()
 
         setContent {
             APPSharePCTheme {
@@ -62,7 +77,7 @@ class MainActivity : ComponentActivity() {
                         CameraCaptureScreen(
                             totalPhotoCount = capturedPhotos.size,
                             onPhotoCaptured = { photoFile ->
-                                viewModel.addPhoto(photoFile)
+                                viewModel.addCapturedPhoto(photoFile)
                             },
                             onFinish = {
                                 viewModel.setShowCamera(false)
@@ -87,6 +102,17 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+        }
+    }
+
+    private fun requestLegacyStoragePermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) return
+        val granted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.WRITE_EXTERNAL_STORAGE
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!granted) {
+            storagePermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
         }
     }
 

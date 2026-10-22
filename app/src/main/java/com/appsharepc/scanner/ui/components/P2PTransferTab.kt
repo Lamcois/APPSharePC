@@ -806,12 +806,7 @@ fun PhoneToPhoneSection(
                 Spacer(modifier = Modifier.height(10.dp))
                 OutlinedTextField(
                     value = targetIp,
-                    onValueChange = { newIp ->
-                        viewModel.setP2pTargetIp(newIp)
-                        if (selectedPeerDevice != null && newIp != selectedPeerDevice?.primaryIp) {
-                            viewModel.clearSelectedPeerDevice()
-                        }
-                    },
+                    onValueChange = { newIp -> viewModel.setManualP2pTargetIp(newIp) },
                     label = { Text("Hoặc gõ IP điện thoại nhận thủ công") },
                     placeholder = { Text("VD: 100.x.y.z (Tailscale) hoặc 192.168.1.x") },
                     singleLine = true,

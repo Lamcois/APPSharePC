@@ -79,7 +79,9 @@ object SmbManager {
                     (target.effectiveIp == settings.lanIp.trim() ||
                      target.effectiveIp == settings.tailscaleIp.trim() ||
                      target.effectiveIp == settings.pcIp.trim())) {
-                    return@withContext target
+                    // Chỉ dùng lại IP/tuyến đã dò; luôn lấy share/tài khoản từ settings hiện tại
+                    // (2 hồ sơ cùng IP nhưng khác thư mục chia sẻ không được dùng nhầm cấu hình của nhau)
+                    return@withContext target.copy(settings = settings.copy(pcIp = target.effectiveIp))
                 }
             }
         }
@@ -702,31 +704,39 @@ object SmbManager {
                 val outputStreamPair = FileUtils.openDownloadOutputStream(context, localRelativePath)
                 val outStream = outputStreamPair.first
 
-                val smbFile = share.openFile(
-                    remotePath,
-                    setOf(AccessMask.GENERIC_READ),
-                    null,
-                    SMB2ShareAccess.ALL,
-                    SMB2CreateDisposition.FILE_OPEN,
-                    null
-                )
+                try {
+                    val smbFile = share.openFile(
+                        remotePath,
+                        setOf(AccessMask.GENERIC_READ),
+                        null,
+                        SMB2ShareAccess.ALL,
+                        SMB2CreateDisposition.FILE_OPEN,
+                        null
+                    )
 
-                val totalExpected = fileSize.coerceAtLeast(1L)
-                var totalRead = 0L
+                    val totalExpected = fileSize.coerceAtLeast(1L)
+                    var totalRead = 0L
 
-                outStream.use { out ->
-                    smbFile.inputStream.use { input ->
-                        var bytesRead: Int
-                        while (input.read(buffer).also { bytesRead = it } != -1) {
-                            out.write(buffer, 0, bytesRead)
-                            totalRead += bytesRead.toLong()
-                            val percent = ((totalRead * 100L) / totalExpected).toInt().coerceIn(0, 100)
-                            onProgress?.invoke(fileName, index + 1, totalFiles, percent)
+                    smbFile.use { file ->
+                        outStream.use { out ->
+                            file.inputStream.use { input ->
+                                var bytesRead: Int
+                                while (input.read(buffer).also { bytesRead = it } != -1) {
+                                    out.write(buffer, 0, bytesRead)
+                                    totalRead += bytesRead.toLong()
+                                    val percent = ((totalRead * 100L) / totalExpected).toInt().coerceIn(0, 100)
+                                    onProgress?.invoke(fileName, index + 1, totalFiles, percent)
+                                }
+                                out.flush()
+                            }
                         }
-                        out.flush()
                     }
+                } catch (e: Exception) {
+                    // Không để lại tệp tải dở (IS_PENDING) trong thư mục Download
+                    try { outStream.close() } catch (_: Exception) {}
+                    FileUtils.abortDownload(context, outputStreamPair.second)
+                    throw e
                 }
-                smbFile.close()
                 FileUtils.finishDownload(context, outputStreamPair.second)
             }
 

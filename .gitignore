@@ -15,3 +15,7 @@ capture
 *.hprof
 .gemini
 _backup_ui_v1.13.0
+
+# Python
+__pycache__/
+*.pyc

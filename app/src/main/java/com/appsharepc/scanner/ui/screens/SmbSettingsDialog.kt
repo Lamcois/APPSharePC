@@ -104,6 +104,7 @@ fun SmbSettingsDialog(
         username = username.trim(),
         password = password,
         domain = domain.trim(),
+        port = s.port,
         enable3dSync = enable3dSync,
         sync3dIp = sync3dIp.trim()
     )

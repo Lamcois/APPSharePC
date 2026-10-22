@@ -152,6 +152,31 @@ object FileUtils {
         }
     }
 
+    /**
+     * Hủy tệp tải dở (lỗi giữa chừng): xóa mục MediaStore đang IS_PENDING hoặc tệp đã tạo trên Android 8-9.
+     */
+    fun abortDownload(context: Context, uri: Uri?) {
+        if (uri == null) return
+        try {
+            if (uri.scheme == "file") {
+                uri.path?.let { File(it).delete() }
+            } else {
+                context.contentResolver.delete(uri, null, null)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    /**
+     * Chỉ giữ lại tên tệp (bỏ mọi thư mục, "..", ký tự cấm) cho tên tệp nhận từ thiết bị khác qua mạng.
+     */
+    fun sanitizeFileName(rawName: String, fallback: String): String {
+        val baseName = rawName.replace('\\', '/').substringAfterLast('/')
+        val cleaned = baseName.replace(Regex("[\\u0000-\\u001F:*?\"<>|]"), "_").trim().trim('.')
+        return cleaned.ifBlank { fallback }
+    }
+
     private fun getMimeType(fileName: String): String? {
         val ext = fileName.substringAfterLast('.', "").lowercase()
         return MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)

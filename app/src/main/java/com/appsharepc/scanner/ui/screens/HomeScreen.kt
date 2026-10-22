@@ -26,7 +26,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import com.appsharepc.scanner.BuildConfig
-import com.appsharepc.scanner.service.ImageUtils
 import com.appsharepc.scanner.ui.components.AddDeviceChoiceDialog
 import com.appsharepc.scanner.ui.components.ConnectionStatusCard
 import com.appsharepc.scanner.ui.components.FileTransferTab
@@ -102,8 +101,7 @@ fun HomeScreen(
         contract = ActivityResultContracts.PickMultipleVisualMedia()
     ) { uris: List<Uri> ->
         if (uris.isNotEmpty()) {
-            val copiedFiles = uris.mapNotNull { ImageUtils.copyUriToTempFile(context, it) }
-            viewModel.addPhotos(copiedFiles)
+            viewModel.addPhotosFromUris(context, uris)
         }
     }
 
@@ -568,8 +566,8 @@ fun HomeScreen(
                 pendingNewFromId = null
             },
             onTestConnection = { name, settings ->
+                // saveCurrentProfile đã tự chạy testConnection() khi cấu hình hợp lệ
                 viewModel.saveCurrentProfile(name, settings)
-                viewModel.testConnection()
             },
             onDismissTestResult = { viewModel.dismissTestResult() },
             onOpenBackup = { showBackupDialog = true },

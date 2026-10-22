@@ -5,7 +5,7 @@ import json
 import datetime
 import threading
 import urllib.parse
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -321,7 +321,8 @@ class SyncRequestHandler(BaseHTTPRequestHandler):
 def run_http_server():
     server_address = ("0.0.0.0", HTTP_PORT)
     try:
-        httpd = HTTPServer(server_address, SyncRequestHandler)
+        # Đa luồng: lệnh /sync chạy lâu không làm treo /status (App sẽ báo nhầm "dịch vụ không chạy")
+        httpd = ThreadingHTTPServer(server_address, SyncRequestHandler)
         log("Server", f"API Listener đang lắng nghe tại cổng {HTTP_PORT} (hỗ trợ lệnh từ App điện thoại)...")
         httpd.serve_forever()
     except Exception as e:

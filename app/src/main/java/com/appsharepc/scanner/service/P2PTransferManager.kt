@@ -127,6 +127,8 @@ object P2PTransferManager {
                             withContext(Dispatchers.Main) {
                                 onError("Lỗi máy chủ nhận tệp: ${e.localizedMessage}")
                             }
+                            // Máy chủ chết bất ngờ: dọn trạng thái để lần bật sau mở lại được cổng
+                            stopReceiver()
                         }
                         break
                     }
@@ -157,6 +159,7 @@ object P2PTransferManager {
         onReceived: (P2pReceivedItem) -> Unit
     ) {
         try {
+            socket.soTimeout = 60_000
             val inStream = BufferedInputStream(socket.getInputStream())
             val outStream = BufferedOutputStream(socket.getOutputStream())
 
@@ -199,12 +202,15 @@ object P2PTransferManager {
                 }
 
                 method == "POST" && path == "/upload" -> {
-                    val encodedName = headers["x-file-name"] ?: "received_${System.currentTimeMillis()}"
-                    val cleanFileName = try {
+                    val fallbackName = "received_${System.currentTimeMillis()}"
+                    val encodedName = headers["x-file-name"] ?: fallbackName
+                    val decodedName = try {
                         URLDecoder.decode(encodedName, "UTF-8")
                     } catch (_: Exception) {
                         encodedName
                     }
+                    // Tên tệp do máy gửi đặt: bỏ đường dẫn để không ghi ra ngoài Download/APPSharePC
+                    val cleanFileName = FileUtils.sanitizeFileName(decodedName, fallbackName)
 
                     val (targetOutStream, uri) = FileUtils.openDownloadOutputStream(context, cleanFileName)
                     var totalRead = 0L
@@ -222,6 +228,9 @@ object P2PTransferManager {
                                 bytesToRead -= read
                             }
                             out.flush()
+                        }
+                        if (totalRead < contentLength) {
+                            throw IOException("Kết nối bị ngắt khi mới nhận $totalRead/$contentLength bytes")
                         }
                         FileUtils.finishDownload(context, uri)
 
@@ -243,6 +252,7 @@ object P2PTransferManager {
                         outStream.write(resp.toByteArray(Charsets.UTF_8))
                         outStream.flush()
                     } catch (e: Exception) {
+                        FileUtils.abortDownload(context, uri)
                         sendError(outStream, 500, "Lỗi ghi file: ${e.localizedMessage}")
                     }
                 }
@@ -337,7 +347,9 @@ object P2PTransferManager {
     private fun sendError(out: OutputStream, code: Int, message: String) {
         val body = "Error $code: $message"
         val bytes = body.toByteArray(Charsets.UTF_8)
-        val resp = "HTTP/1.1 $code $message\r\n" +
+        // Dòng trạng thái HTTP chỉ chứa ASCII; thông báo tiếng Việt nằm trong body
+        val reason = if (code == 404) "Not Found" else "Error"
+        val resp = "HTTP/1.1 $code $reason\r\n" +
                 "Content-Type: text/plain; charset=utf-8\r\n" +
                 "Content-Length: ${bytes.size}\r\n" +
                 "Connection: close\r\n\r\n$body"
@@ -364,6 +376,16 @@ object P2PTransferManager {
         try {
             val total = items.size
             for ((index, item) in items.withIndex()) {
+                // Một số trình quản lý tệp không báo kích thước (0) -> đếm lại để Content-Length chính xác
+                val contentLength = if (item.size > 0L) item.size else {
+                    item.openInputStream()?.use { input ->
+                        val buf = ByteArray(64 * 1024)
+                        var count = 0L
+                        var r: Int
+                        while (input.read(buf).also { r = it } != -1) count += r
+                        count
+                    } ?: return@withContext Result.failure(IllegalStateException("Không thể đọc tệp ${item.name}"))
+                }
                 val encodedName = URLEncoder.encode(item.name, "UTF-8")
                 val url = URL("http://$targetIp:$port/upload")
                 val conn = (url.openConnection() as HttpURLConnection).apply {
@@ -372,7 +394,7 @@ object P2PTransferManager {
                     readTimeout = 60000
                     doOutput = true
                     setRequestProperty("X-File-Name", encodedName)
-                    setFixedLengthStreamingMode(item.size)
+                    setFixedLengthStreamingMode(contentLength)
                 }
 
                 val inStream = item.openInputStream()
@@ -380,7 +402,7 @@ object P2PTransferManager {
 
                 val buffer = ByteArray(64 * 1024)
                 var written = 0L
-                val fileSize = item.size.coerceAtLeast(1L)
+                val fileSize = contentLength.coerceAtLeast(1L)
 
                 onProgress?.invoke(item.name, index + 1, total, 0)
 
@@ -474,45 +496,49 @@ object P2PTransferManager {
         val startTime = System.currentTimeMillis()
 
         try {
-            val socket = Socket()
-            socket.connect(java.net.InetSocketAddress(cleanIp, port), 2500)
-            val latency = System.currentTimeMillis() - startTime
+            Socket().use { socket ->
+                socket.connect(java.net.InetSocketAddress(cleanIp, port), 2500)
+                socket.soTimeout = 3000
+                val latency = System.currentTimeMillis() - startTime
 
-            val out = BufferedOutputStream(socket.getOutputStream())
-            val inStream = BufferedInputStream(socket.getInputStream())
-            val req = "GET /ping HTTP/1.1\r\nHost: $cleanIp\r\nConnection: close\r\n\r\n"
-            out.write(req.toByteArray(Charsets.UTF_8))
-            out.flush()
+                val out = BufferedOutputStream(socket.getOutputStream())
+                val inStream = BufferedInputStream(socket.getInputStream())
+                val req = "GET /ping HTTP/1.1\r\nHost: $cleanIp\r\nConnection: close\r\n\r\n"
+                out.write(req.toByteArray(Charsets.UTF_8))
+                out.flush()
 
-            val respLine = readLine(inStream) ?: ""
-            var deviceName = ""
+                var deviceName = ""
 
-            if (respLine.contains("200")) {
-                while (true) {
-                    val h = readLine(inStream) ?: break
-                    if (h.isEmpty()) break
-                }
-                val bodyBytes = ByteArray(1024)
-                val read = inStream.read(bodyBytes)
-                if (read > 0) {
-                    val bodyStr = String(bodyBytes, 0, read, Charsets.UTF_8)
-                    try {
-                        val json = JSONObject(bodyStr)
-                        deviceName = json.optString("device", "")
-                    } catch (_: Exception) {}
-                }
+                // Cổng đã mở là kết nối được; chỉ đọc tên máy nếu phản hồi kịp (không chờ vô hạn)
+                try {
+                    val respLine = readLine(inStream) ?: ""
+                    if (respLine.contains("200")) {
+                        while (true) {
+                            val h = readLine(inStream) ?: break
+                            if (h.isEmpty()) break
+                        }
+                        val bodyBytes = ByteArray(1024)
+                        val read = inStream.read(bodyBytes)
+                        if (read > 0) {
+                            val bodyStr = String(bodyBytes, 0, read, Charsets.UTF_8)
+                            try {
+                                val json = JSONObject(bodyStr)
+                                deviceName = json.optString("device", "")
+                            } catch (_: Exception) {}
+                        }
+                    }
+                } catch (_: java.net.SocketTimeoutException) {}
+
+                val devText = if (deviceName.isNotBlank()) " ($deviceName)" else ""
+                PeerTestResult(
+                    success = true,
+                    message = "Kết nối ĐT thành công qua $routeType$devText! Độ trễ: ${latency}ms",
+                    latencyMs = latency,
+                    deviceName = deviceName,
+                    routeType = routeType,
+                    activeIp = cleanIp
+                )
             }
-            socket.close()
-
-            val devText = if (deviceName.isNotBlank()) " ($deviceName)" else ""
-            PeerTestResult(
-                success = true,
-                message = "Kết nối ĐT thành công qua $routeType$devText! Độ trễ: ${latency}ms",
-                latencyMs = latency,
-                deviceName = deviceName,
-                routeType = routeType,
-                activeIp = cleanIp
-            )
         } catch (e: Exception) {
             val err = when {
                 e is java.net.SocketTimeoutException -> "Hết thời gian chờ (Timeout). ĐT đích chưa mở APPSharePC hoặc khác mạng."
@@ -589,52 +615,53 @@ object P2PTransferManager {
                     val ip = "$prefix$i"
                     try {
                         val start = System.currentTimeMillis()
-                        val socket = Socket()
-                        socket.connect(java.net.InetSocketAddress(ip, port), 250)
-                        val latency = System.currentTimeMillis() - start
+                        Socket().use { socket ->
+                            socket.connect(java.net.InetSocketAddress(ip, port), 250)
+                            socket.soTimeout = 1500
+                            val latency = System.currentTimeMillis() - start
 
-                        val out = BufferedOutputStream(socket.getOutputStream())
-                        val inStream = BufferedInputStream(socket.getInputStream())
-                        val req = "GET /ping HTTP/1.1\r\nHost: $ip\r\nConnection: close\r\n\r\n"
-                        out.write(req.toByteArray(Charsets.UTF_8))
-                        out.flush()
+                            val out = BufferedOutputStream(socket.getOutputStream())
+                            val inStream = BufferedInputStream(socket.getInputStream())
+                            val req = "GET /ping HTTP/1.1\r\nHost: $ip\r\nConnection: close\r\n\r\n"
+                            out.write(req.toByteArray(Charsets.UTF_8))
+                            out.flush()
 
-                        val respLine = readLine(inStream) ?: ""
-                        var deviceName = "Điện thoại $ip"
-                        if (respLine.contains("200")) {
-                            while (true) {
-                                val h = readLine(inStream) ?: break
-                                if (h.isEmpty()) break
+                            val respLine = readLine(inStream) ?: ""
+                            var deviceName = "Điện thoại $ip"
+                            if (respLine.contains("200")) {
+                                while (true) {
+                                    val h = readLine(inStream) ?: break
+                                    if (h.isEmpty()) break
+                                }
+                                val buf = ByteArray(512)
+                                val r = inStream.read(buf)
+                                if (r > 0) {
+                                    val jsonStr = String(buf, 0, r, Charsets.UTF_8)
+                                    try {
+                                        val json = JSONObject(jsonStr)
+                                        val d = json.optString("device", "")
+                                        if (d.isNotBlank()) deviceName = d
+                                    } catch (_: Exception) {}
+                                }
                             }
-                            val buf = ByteArray(512)
-                            val r = inStream.read(buf)
-                            if (r > 0) {
-                                val jsonStr = String(buf, 0, r, Charsets.UTF_8)
-                                try {
-                                    val json = JSONObject(jsonStr)
-                                    val d = json.optString("device", "")
-                                    if (d.isNotBlank()) deviceName = d
-                                } catch (_: Exception) {}
+
+                            val type = if (deviceName.contains("Tab", ignoreCase = true) ||
+                                deviceName.contains("Pad", ignoreCase = true)) {
+                                PeerDeviceType.TABLET
+                            } else {
+                                PeerDeviceType.PHONE
                             }
-                        }
-                        socket.close()
 
-                        val type = if (deviceName.contains("Tab", ignoreCase = true) ||
-                            deviceName.contains("Pad", ignoreCase = true)) {
-                            PeerDeviceType.TABLET
-                        } else {
-                            PeerDeviceType.PHONE
-                        }
-
-                        found.add(
-                            DiscoveredPeer(
-                                ip = ip,
-                                port = port,
-                                deviceName = deviceName,
-                                deviceType = type,
-                                latencyMs = latency
+                            found.add(
+                                DiscoveredPeer(
+                                    ip = ip,
+                                    port = port,
+                                    deviceName = deviceName,
+                                    deviceType = type,
+                                    latencyMs = latency
+                                )
                             )
-                        )
+                        }
                     } catch (_: Exception) {
                         // Offline
                     }

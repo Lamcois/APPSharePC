@@ -26,6 +26,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.appsharepc.scanner.service.ImageUtils
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 
 @Composable
@@ -51,7 +53,8 @@ fun CameraCaptureScreen(
     val previewView = remember { PreviewView(context) }
 
     LaunchedEffect(lensFacing, flashMode) {
-        val cameraProvider = cameraProviderFuture.get()
+        // get() chặn luồng cho tới khi CameraX khởi tạo xong -> chờ ở luồng IO, không treo giao diện
+        val cameraProvider = withContext(Dispatchers.IO) { cameraProviderFuture.get() }
         val preview = Preview.Builder().build().also {
             it.surfaceProvider = previewView.surfaceProvider
         }
@@ -214,8 +217,8 @@ fun CameraCaptureScreen(
                                 object : ImageCapture.OnImageSavedCallback {
                                     override fun onImageSaved(output: ImageCapture.OutputFileResults) {
                                         isCapturing = false
-                                        ImageUtils.normalizeImageOrientation(photoFile)
-                                        // Chỉ thêm file vào ViewModel (tăng đúng 1 ảnh)
+                                        // Chỉ thêm file vào ViewModel (tăng đúng 1 ảnh).
+                                        // Việc xoay ảnh theo EXIF chạy nền trong ViewModel để không treo camera.
                                         onPhotoCaptured(photoFile)
                                     }
 
