@@ -1,0 +1,17 @@
+*.iml
+.gradle
+/local.properties
+/.idea
+.DS_Store
+/build
+*/build
+.kotlin
+.cxx
+capture
+/captures
+*.apk
+*.ap_
+*.aab
+*.hprof
+.gemini
+_backup_ui_v1.13.0
